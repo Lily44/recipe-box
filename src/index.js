@@ -29,7 +29,11 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    if (!checkPasscode(request, env)) {
+    // Photo viewing is public (keys are long, random, unguessable) since <img> tags
+    // can't send custom headers. Everything else still requires the passcode.
+    const isPublicPhotoView = method === "GET" && /^\/api\/photos\/.+$/.test(path);
+
+    if (!isPublicPhotoView && !checkPasscode(request, env)) {
       return json({ error: "Invalid or missing passcode" }, 401);
     }
 
@@ -47,7 +51,7 @@ export default {
       const body = await request.json();
       const recipe = normalizeIncoming(body);
       await env.DB.prepare(
-        `INSERT INTO recipes (id, title, ingredients, steps, notes, tags, photo_key, created_at)
+        `INSERT OR REPLACE INTO recipes (id, title, ingredients, steps, notes, tags, photo_key, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
         .bind(
