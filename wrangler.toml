@@ -1,11 +1,10 @@
-name = "recipe-box-api"
+name = "recipe-box"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "recipe-box-db"
-database_id = "PASTE_YOUR_DATABASE_ID_HERE"
 
 [[r2_buckets]]
 binding = "PHOTOS"
