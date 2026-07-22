@@ -1,10 +1,10 @@
 // Recipe Box API — Cloudflare Worker
-// Handles recipe CRUD (via D1) and photo storage (via R2), gated by a single passcode.
+// Handles recipe CRUD (via D1) and photo storage (via R2). Open access — no passcode.
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*", // tighten to your Pages domain once deployed, e.g. "https://recipe-box.pages.dev"
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Passcode",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
 function json(data, status = 200) {
@@ -12,11 +12,6 @@ function json(data, status = 200) {
     status,
     headers: { "Content-Type": "application/json", ...CORS_HEADERS },
   });
-}
-
-function checkPasscode(request, env) {
-  const provided = request.headers.get("X-Passcode");
-  return provided && provided === env.APP_PASSCODE;
 }
 
 export default {
@@ -29,12 +24,61 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    // Photo viewing is public (keys are long, random, unguessable) since <img> tags
-    // can't send custom headers. Everything else still requires the passcode.
-    const isPublicPhotoView = method === "GET" && /^\/api\/photos\/.+$/.test(path);
+    // --- AI recipe parsing ---
 
-    if (!isPublicPhotoView && !checkPasscode(request, env)) {
-      return json({ error: "Invalid or missing passcode" }, 401);
+    if (path === "/api/parse-recipe" && method === "POST") {
+      const { rawText } = await request.json();
+      if (!rawText || !rawText.trim()) {
+        return json({ error: "No text provided" }, 400);
+      }
+
+      const prompt = `You will be given raw, informally-written recipe notes copied from someone's notes app. They may have no headers, inconsistent formatting, and trailing asides that aren't real steps.
+
+Extract structured recipe data. Respond with ONLY a raw JSON object, no markdown fences, no preamble, matching exactly this shape:
+{"title": string, "ingredients": string[], "steps": string[], "notes": string}
+
+Rules:
+- "ingredients" are lines with quantities or food items, even without a header.
+- "steps" are cooking instructions in order, each a short standalone sentence.
+- "notes" is a single string for asides, questions, or variations that aren't ingredients or steps (e.g. "Add vanilla and cinnamon?"). Use an empty string if there are none.
+- If no clear title exists, infer a short, plain one from the content.
+- Do not invent ingredients or steps that aren't implied by the text.
+
+Raw notes:
+"""
+${rawText}
+"""`;
+
+      try {
+        const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": env.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-5",
+            max_tokens: 1000,
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+
+        if (!anthropicRes.ok) {
+          const errText = await anthropicRes.text();
+          return json({ error: "Anthropic API error", detail: errText }, 502);
+        }
+
+        const data = await anthropicRes.json();
+        const textBlock = (data.content || []).find((b) => b.type === "text");
+        if (!textBlock) return json({ error: "No text in AI response" }, 502);
+
+        const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        return json(parsed);
+      } catch (e) {
+        return json({ error: "Parsing failed", detail: String(e) }, 500);
+      }
     }
 
     // --- Recipes ---
